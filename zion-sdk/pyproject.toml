@@ -1,8 +1,6 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
-
-[project]
+build-backend = "setuptools.build_meta" [project]
 name = "zion-sdk"
 version = "0.1.0"
 description = "Python SDK for the SiliconCentric Zion IV&V platform (HalService client)."
@@ -11,75 +9,34 @@ requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 authors = [{ name = "SiliconCentric IV&V" }]
 keywords = ["ivv", "zion", "hal", "grpc", "embedded"]
-classifiers = [
-  "Development Status :: 4 - Beta",
-  "Intended Audience :: Developers",
-  "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.10",
-  "Programming Language :: Python :: 3.11",
-  "Programming Language :: Python :: 3.12",
-  "Topic :: Software Development :: Libraries :: Python Modules",
-  "Topic :: System :: Hardware",
+classifiers = [ "Development Status :: 4 - Beta", "Intended Audience :: Developers", "Programming Language :: Python :: 3", "Programming Language :: Python :: 3.10", "Programming Language :: Python :: 3.11", "Programming Language :: Python :: 3.12", "Topic :: Software Development :: Libraries :: Python Modules", "Topic :: System :: Hardware",
 ]
-dependencies = [
-  "grpcio>=1.51,<2.0",
-  "protobuf>=5.26",
-]
-
-[project.optional-dependencies]
-dev = [
-  "grpcio-tools>=1.51,<2.0",
-  "mypy-protobuf>=3.4",
-  "pytest>=8.0",
-  "pytest-cov>=4.0",
-  "mypy>=1.8",
-  "ruff>=0.4",
-  "pyyaml>=6.0",
-  "types-protobuf",
-  "types-grpcio",
-]
-
-[project.urls]
-Homepage = "https://siliconcentric.example/zion-sdk"
-
-[tool.setuptools.packages.find]
+dependencies = [ "grpcio>=1.51,<2.0", "protobuf>=5.26",
+] [project.optional-dependencies]
+dev = [ "grpcio-tools>=1.51,<2.0", "mypy-protobuf>=3.4", "pytest>=8.0", "pytest-cov>=4.0", "mypy>=1.8", "ruff>=0.4", "pyyaml>=6.0", "types-protobuf", "types-grpcio",
+] [project.urls]
+Homepage = "https://siliconcentric.example/zion-sdk" [tool.setuptools.packages.find]
 where = ["src"]
-include = ["zion_sdk*", "acadia_sdk*"]
-
-[tool.setuptools.package-data]
+include = ["zion_sdk*", "acadia_sdk*"] [tool.setuptools.package-data]
 "zion_sdk" = ["py.typed"]
 "acadia_sdk" = ["py.typed"]
-"zion_sdk._proto" = ["**/*.pyi"]
-
-[tool.ruff]
+"zion_sdk._proto" = ["**/*.pyi"] [tool.ruff]
 line-length = 100
 target-version = "py310"
-extend-exclude = ["src/zion_sdk/_proto", "src/zion_sdk/types"]
-
-[tool.ruff.lint]
+extend-exclude = ["src/zion_sdk/_proto", "src/zion_sdk/types"] [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
-ignore = ["B008"]
-
-[tool.mypy]
+ignore = ["B008"] [tool.mypy]
 python_version = "3.10"
 strict = true
 files = ["src/zion_sdk"]
-exclude = [
-  "^src/zion_sdk/_proto/",
-  "^src/zion_sdk/types/",
-]
-
-[[tool.mypy.overrides]]
+exclude = [ "^src/zion_sdk/_proto/", "^src/zion_sdk/types/",
+] [[tool.mypy.overrides]]
 module = ["grpc", "grpc.*", "google.protobuf.*"]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
+ignore_missing_imports = true [[tool.mypy.overrides]]
 module = ["zion_sdk._proto", "zion_sdk._proto.*", "zion_sdk.types", "zion_sdk.types.*"]
 ignore_errors = true
 follow_imports = "skip"
-ignore_missing_imports = true
-
-[tool.pytest.ini_options]
+ignore_missing_imports = true [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
 filterwarnings = ["ignore::DeprecationWarning"]

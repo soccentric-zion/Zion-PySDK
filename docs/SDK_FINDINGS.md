@@ -1,46 +1,12 @@
-# IV&V Python SDK — Phase 1 Findings
-
-**Status:** Phase 1 (review) complete. **No SDK code has been written.** This document presents what the real source repositories actually contain, the gaps and contradictions against the agent prompt, and the questions that must be resolved before Phase 2 (build).
-
-**Reviewed:**
+# IV&V Python SDK — Phase 1 Findings **Status:** Phase 1 (review) complete. **No SDK code has been written.** This document presents what the real source repositories actually contain, the gaps and contradictions against the agent prompt, and the questions that must be resolved before Phase 2 (build). **Reviewed:**
 - `Acadia-OS/` — Yocto image + OTA (audited)
 - `Acadia-HAL/` — C++ HAL library + proto contracts (audited)
 - `Acadia-Client/` — on-target gRPC client daemon (audited)
 - `Acadia-Server/` — orchestrator (audited as additional context — see §3)
-- `integration/` — prior cross-repo audit reports (consulted as ground truth where they agreed with code)
-
----
-
-## 0. Headline finding (read this first)
-
-**The prompt's premise about which contract the SDK speaks does not match the real code.** Three facts from the source:
-
-1. The on-target **Client is a gRPC *client***, not a gRPC server. It dials *out* to Server on TCP `50051` and opens a single persistent **bidirectional stream** (`acadia.stream.ClientService.Connect`). See `Acadia-Client/src/stream/StreamClient.h` and `Acadia-Client/conf/client.conf.sample`. Nothing on the target listens for gRPC connections from anyone.
-
-2. **Server** is the gRPC server. It exposes **two** services on `50051` (`Acadia-Server/src/main.cpp:24-25`, `GrpcServerRunner`):
-   - `hal.HalService` — clean per-mode request/response and server-streaming RPCs (`RunSingleShot`, `StartLongTerm`, `StartMonitoring`, `StartEventBased`, `Stop`, `Pause`, `Resume`, `ListModules`). This is **what the prompt's five-line API maps to one-for-one.**
-   - `acadia.stream.ClientService.Connect` — bidi stream where on-target Clients connect in, Server pushes `ConfigureRun` / `StartRun` / `Pause` / `Resume` / `Stop` / `RestartRun` / `BatchAck`, and Clients push back `HelloReport` / `ConfigureAck` / `TestResultBatch` / `LogBatch` / `StateReport`. This is **not a request/response API** — it is multiplexed by `run_id`, batched at ~1 Hz, with per-batch acks and reconnect/resume semantics.
-
-3. The prompt says: *"the SDK is a gRPC client that speaks the same protobuf contract to Client that Server does."* In reality nothing speaks gRPC *to* Client. The protocol Server uses with Client is `ClientService`, but Server is on the *server* side of that stream (Client dials in). So a literal reading of the prompt would require the SDK to **listen** as a gRPC server, wait for an on-target Client to dial in, then emit `ConfigureRun`/`StartRun` and consume batched results — that is the **opposite** of the prompt's `ivv.connect("host:port")` ergonomics, and a heavyweight protocol to wrap in a five-line example.
-
-There is also the in-process C++ `lib_base.h` API (HAL itself), but the SDK is explicitly forbidden from calling HAL directly.
-
-**This is the single most important question to resolve before Phase 2.** Three viable interpretations are laid out in §4 — please pick one.
-
----
-
-## 1. Proto inventory (the real contracts)
-
-All `.proto` files live in `Acadia-HAL/protos/`. There is no separate contracts repo.
-
-### 1.1 `protos/common.proto` — package `hal.common`
-
-Enums (numeric values are stable; never renumber):
+- `integration/` — prior cross-repo audit reports (consulted as ground truth where they agreed with code) --- ## 0. Headline finding (read this first) **The prompt's premise about which contract the SDK speaks does not match the real code.** Three facts from the source: 1. The on-target **Client is a gRPC *client***, not a gRPC server. It dials *out* to Server on TCP `50051` and opens a single persistent **bidirectional stream** (`acadia.stream.ClientService.Connect`). See `Acadia-Client/src/stream/StreamClient.h` and `Acadia-Client/conf/client.conf.sample`. Nothing on the target listens for gRPC connections from anyone. 2. **Server** is the gRPC server. It exposes **two** services on `50051` (`Acadia-Server/src/main.cpp:24-25`, `GrpcServerRunner`): - `hal.HalService` — clean per-mode request/response and server-streaming RPCs (`RunSingleShot`, `StartLongTerm`, `StartMonitoring`, `StartEventBased`, `Stop`, `Pause`, `Resume`, `ListModules`). This is **what the prompt's five-line API maps to one-for-one.** - `acadia.stream.ClientService.Connect` — bidi stream where on-target Clients connect in, Server pushes `ConfigureRun`/ `StartRun`/ `Pause`/ `Resume`/ `Stop`/ `RestartRun`/ `BatchAck`, and Clients push back `HelloReport`/ `ConfigureAck`/ `TestResultBatch`/ `LogBatch`/ `StateReport`. This is **not a request/response API** — it is multiplexed by `run_id`, batched at ~1 Hz, with per-batch acks and reconnect/resume semantics. 3. The prompt says: *"the SDK is a gRPC client that speaks the same protobuf contract to Client that Server does."* In reality nothing speaks gRPC *to* Client. The protocol Server uses with Client is `ClientService`, but Server is on the *server* side of that stream (Client dials in). So a literal reading of the prompt would require the SDK to **listen** as a gRPC server, wait for an on-target Client to dial in, then emit `ConfigureRun`/`StartRun` and consume batched results — that is the **opposite** of the prompt's `ivv.connect("host:port")` ergonomics, and a heavyweight protocol to wrap in a five-line example. There is also the in-process C++ `lib_base.h` API (HAL itself), but the SDK is explicitly forbidden from calling HAL directly. **This is the single most important question to resolve before Phase 2.** Three viable interpretations are laid out in §4 — please pick one. --- ## 1. Proto inventory (the real contracts) All `.proto` files live in `Acadia-HAL/protos/`. There is no separate contracts repo. ### 1.1 `protos/common.proto` — package `hal.common` Enums (numeric values are stable; never renumber):
 - `ExecutionMode` — `SINGLE_SHOT=1`, `LONG_TERM=2`, `MONITORING=3`, `EVENT_BASED=4` (maps to `TestBase::TestMode`)
 - `TestStatus` — `TEST_STATUS_PASS=1`, `_FAIL=2`, `_ERROR=3`, `_TIMEOUT=4`, `_ABORTED=5`, `_SKIPPED=7`. (Short aliases `PASS`/`FAIL`/… kept under `option allow_alias = true`; deprecated. `PARTIAL=6` retired but tag reserved.)
-- `TestSeverity` — `INFO=1`, `WARNING=2`, `ERROR=3`, `CRITICAL=4`.
-
-Messages:
+- `TestSeverity` — `INFO=1`, `WARNING=2`, `ERROR=3`, `CRITICAL=4`. Messages:
 - `TypedValue` — oneof `{bool, int64, double, string}`. Mirrors `hal::Value`.
 - `TestOutput` — `{status, severity, reason: map<string,string>, metrics: map<string,TypedValue>, monitoring: map<string,TypedValue>, event: map<string,TypedValue>, error_message}`. Tags 1,2 reserved (old `passed`/`data`).
 - `TestResult` — `{module_id, test_id, name, sequence, timestamp, duration, output: TestOutput, subtests: repeated TestResult}`. Recursive.
@@ -50,247 +16,78 @@ Messages:
 - `CommonConfig` — `{interval_ms, duration_ms, run_forever, poll_interval_ms}`. Common across modes.
 - `MonitoringParams` — `{monitor_item_names: repeated string}`.
 - `EventCondition` — `{test_name, expected_pass, expression}` (simple-name form OR freeform expression).
-- `ResultEnvelope` — `{module_id, module_version, timestamp, mode, status, error_message, payload: google.protobuf.Any}`. **Wrapper returned by every `HalService` RPC**; `.payload` is `hal.modules.<name>.Result`.
-
-### 1.2 `protos/hal_service.proto` — package `hal`, service `HalService`
-
-Stable, per-mode service. Requests carry `module_id`, `CommonConfig`, and a `google.protobuf.Any module_config` (the module's `Config` message).
-
-| RPC | Streaming | Request | Response | Maps to prompt method |
+- `ResultEnvelope` — `{module_id, module_version, timestamp, mode, status, error_message, payload: google.protobuf.Any}`. **Wrapper returned by every `HalService` RPC**; `.payload` is `hal.modules.<name>.Result`. ### 1.2 `protos/hal_service.proto` — package `hal`, service `HalService` Stable, per-mode service. Requests carry `module_id`, `CommonConfig`, and a `google.protobuf.Any module_config` (the module's `Config` message). | RPC | Streaming | Request | Response | Maps to prompt method |
 |---|---|---|---|---|
-| `RunSingleShot` | unary | `SingleShotRequest` | `ResultEnvelope` | `peripheral.run_oneshot()` |
-| `StartLongTerm` | server-stream | `LongTermRequest` | stream `ResultEnvelope` | `peripheral.start_long_running()` family |
+| `RunSingleShot` | unary | `SingleShotRequest` | `ResultEnvelope` | `peripheral.run_oneshot` |
+| `StartLongTerm` | server-stream | `LongTermRequest` | stream `ResultEnvelope` | `peripheral.start_long_running` family |
 | `StartMonitoring` | server-stream | `MonitoringRequest` (+`MonitoringParams`) | stream `ResultEnvelope` | `peripheral.monitor(period_ms, duration_s, …)` |
 | `StartEventBased` | server-stream | `EventBasedRequest` (+`EventCondition`) | stream `ResultEnvelope` | `peripheral.arm_event(**trigger)` |
-| `Stop` | unary | `StopRequest{module_id, session_id}` | `StopResponse{accepted, message}` | terminate streaming sessions / `stop_long_running()` |
+| `Stop` | unary | `StopRequest{module_id, session_id}` | `StopResponse{accepted, message}` | terminate streaming sessions/ `stop_long_running` |
 | `Pause` | unary | `PauseRequest{module_id, session_id}` | `PauseResponse` | (no direct prompt method) |
 | `Resume` | unary | `ResumeRequest{module_id, session_id}` | `ResumeResponse` | (no direct prompt method) |
-| `ListModules` | unary | `ListModulesRequest` | `ListModulesResponse{modules: repeated ModuleInfo}` | `Device.peripherals()` |
-
-`ModuleInfo` = `{id, proto_package, config_type, result_type, version, status, source_path}`. This is exactly the per-peripheral discovery payload the prompt's `Device.peripherals()` / `Peripheral.capabilities()` need.
-
-### 1.3 `protos/client_service.proto` — package `acadia.stream`, service `ClientService`
-
-A **single** RPC: `rpc Connect(stream ClientMessage) returns (stream ServerMessage)`.
-
-- Server → Client (oneof in `ServerMessage`): `ConfigureRun`, `StartRun`, `PauseRun`, `ResumeRun`, `StopRun`, `RestartRun`, `BatchAck`, `LogBatchAck`.
+| `ListModules` | unary | `ListModulesRequest` | `ListModulesResponse{modules: repeated ModuleInfo}` | `Device.peripherals` | `ModuleInfo` = `{id, proto_package, config_type, result_type, version, status, source_path}`. This is exactly the per-peripheral discovery payload the prompt's `Device.peripherals`/ `Peripheral.capabilities` need. ### 1.3 `protos/client_service.proto` — package `acadia.stream`, service `ClientService` A **single** RPC: `rpc Connect(stream ClientMessage) returns (stream ServerMessage)`. - Server → Client (oneof in `ServerMessage`): `ConfigureRun`, `StartRun`, `PauseRun`, `ResumeRun`, `StopRun`, `RestartRun`, `BatchAck`, `LogBatchAck`.
 - Client → Server (oneof in `ClientMessage`): `HelloReport` (board_id + client/hal/os versions + list of active runs with `last_batch_seq`), `ConfigureAck`, `TestResultBatch` (1 Hz, `run_id`-keyed, monotonic `batch_seq`, contains `repeated ResultSample{timestamp,status,error,payload:Any,type_url}`), `LogBatch`, `StateReport`.
-- `RunState` enum: `CONFIGURED`, `RUNNING`, `PAUSED`, `COMPLETED`, `FAILED`, `CANCELLED`.
-
-This is a session-and-batch protocol, not an RPC protocol. Wrapping it inside a synchronous five-line API is possible but non-trivial (run_id generation, configure→ack→start sequencing, batch reassembly, monotonic seq tracking, drop/gap detection on reconnect).
-
-### 1.4 `protos/modules/*.proto` — package `hal.modules.<id>`
-
-**51 module proto files** (the prompt expected ~one per peripheral; this matches). Each defines a `Config` and a `Result` message. `Result` follows the post-refactor shape:
-
-```
-message Result {
-  reserved 1;
-  reserved "test_results";
-  repeated hal.common.TestResult results = 2;
+- `RunState` enum: `CONFIGURED`, `RUNNING`, `PAUSED`, `COMPLETED`, `FAILED`, `CANCELLED`. This is a session-and-batch protocol, not an RPC protocol. Wrapping it inside a synchronous five-line API is possible but non-trivial (run_id generation, configure→ack→start sequencing, batch reassembly, monotonic seq tracking, drop/gap detection on reconnect). ### 1.4 `protos/modules/*.proto` — package `hal.modules.<id>` **51 module proto files** (the prompt expected ~one per peripheral; this matches). Each defines a `Config` and a `Result` message. `Result` follows the post-refactor shape: ```
+message Result { reserved 1; reserved "test_results"; repeated hal.common.TestResult results = 2;
 }
-```
-
-That is: every module's `Result.payload` is a flat list of `TestResult` entries (each with status, metrics map, monitoring map, etc.). **There is no peripheral-specific typed sample message** (e.g. there is no `ImuSample { float accel_x; … }`). The data the user gets back is the generic `TestResult` shape with metrics as `map<string, TypedValue>`. See §6 for what this means for the prompt's typed dataclasses.
-
-### 1.5 `protos/registry/modules.yaml` — module manifest
-
-YAML list of 51 module entries, each with `{id, proto_package, config_type, result_type, version, status, category, source_path}`. Categories observed: `peripherals`, `connectivity`, `compute`, `sensors`, `io`, `timing`, `debug`, `safety`, `storage`, `power`, `media`, etc. `ListModules` returns this same data over the wire (sans `category` — see §8 / CM-14 in `integration/contract_reconciliation.md`).
-
----
-
-## 2. Module ("peripheral") inventory
-
-There are **51** active modules — far more than the prompt's "IMU, motor, Ethernet, storage, camera" sketch suggests. The wire identifier is the bare module id (e.g. `"imu"`, `"cpu"`, `"ethernet"`), **not** an instance-style id like `"imu0"`. The system models one of each peripheral *type*, not multiple instances per board.
-
-Full list (from `protos/registry/modules.yaml`):
-
-audio_interfaces, camera_interfaces, camera_module3, clock_and_timing, communication_interface, cpu, debug_and_development_interfaces, deep_learning_accelerator, display_interfaces, environmental, ethernet, ethernet_switch, external_connector, functional_safety, gnss, gpio, gpu, imu, mcu_interface, pcie, poe_hat, power_management, reliability, security_features, sense_hat, serializer_deserializer, software_interface, system_integration, system_memory, thermal_management, usb, video_encode_decode, vision_accelerator, watchdog_and_reset, plus bus/peripheral protos: accelerometer, analog_input, battery, bluetooth, can_bus, emmc, i2c, mipi_csi, mipi_dsi, nvme, pwm_output, rs485, rtc, sd_card, spi, uart.
-
-Each module's available tests are listed as a `Config.test_names: repeated string` (empty = run all). For example `hal.modules.imu.Config`:
-
-> Available tests: test3axisAccelerometer, test3axisGyroscope, test3axisMagnetometer, testImuDataRate, testImuAccuracy, testImuCalibration, testImuTemperatureCompensation, testImuToOrinInterface.
-
-Result payloads are uniformly `Result { repeated hal.common.TestResult results = 2; }`. There are **no per-peripheral data shape definitions** in the protos. The semantic content (accel_x, temp_c, …) lives only in the *names of metric keys* the HAL C++ code emits into `TestOutput.metrics` at runtime, plus per-test docstrings in the C++ headers.
-
----
-
-## 3. Per-repo review summary
-
-### 3.1 Acadia-Client (the prompt's nominal SDK counterpart)
-- **Implementation status: skeleton.** Per `integration/audit_client.md` only step 1 of 18 is implemented. `app.cpp::run()` is a shutdown-poll loop; no gRPC stream, no HAL bridge, no run orchestrator, no spool actually wired up. The headers exist (`stream/StreamClient.h`, `run/RunOrchestrator.h`, `hal_bridge/ResultSerializer.h`, `registry/ModuleRegistry.h`, `registry/AdapterRegistry.h` with `adapters/{cpu,thermal,system_memory,stub}_adapter.{h,cc}`) but the .cc files are largely stubs.
+``` That is: every module's `Result.payload` is a flat list of `TestResult` entries (each with status, metrics map, monitoring map, etc.). **There is no peripheral-specific typed sample message** (e.g. there is no `ImuSample { float accel_x; … }`). The data the user gets back is the generic `TestResult` shape with metrics as `map<string, TypedValue>`. See §6 for what this means for the prompt's typed dataclasses. ### 1.5 `protos/registry/modules.yaml` — module manifest YAML list of 51 module entries, each with `{id, proto_package, config_type, result_type, version, status, category, source_path}`. Categories observed: `peripherals`, `connectivity`, `compute`, `sensors`, `io`, `timing`, `debug`, `safety`, `storage`, `power`, `media`, etc. `ListModules` returns this same data over the wire (sans `category` — see §8/ CM-14 in `integration/contract_reconciliation.md`). --- ## 2. Module ("peripheral") inventory There are **51** active modules — far more than the prompt's "IMU, motor, Ethernet, storage, camera" sketch suggests. The wire identifier is the bare module id (e.g. `"imu"`, `"cpu"`, `"ethernet"`), **not** an instance-style id like `"imu0"`. The system models one of each peripheral *type*, not multiple instances per board. Full list (from `protos/registry/modules.yaml`): audio_interfaces, camera_interfaces, camera_module3, clock_and_timing, communication_interface, cpu, debug_and_development_interfaces, deep_learning_accelerator, display_interfaces, environmental, ethernet, ethernet_switch, external_connector, functional_safety, gnss, gpio, gpu, imu, mcu_interface, pcie, poe_hat, power_management, reliability, security_features, sense_hat, serializer_deserializer, software_interface, system_integration, system_memory, thermal_management, usb, video_encode_decode, vision_accelerator, watchdog_and_reset, plus bus/peripheral protos: accelerometer, analog_input, battery, bluetooth, can_bus, emmc, i2c, mipi_csi, mipi_dsi, nvme, pwm_output, rs485, rtc, sd_card, spi, uart. Each module's available tests are listed as a `Config.test_names: repeated string` (empty = run all). For example `hal.modules.imu.Config`: > Available tests: test3axisAccelerometer, test3axisGyroscope, test3axisMagnetometer, testImuDataRate, testImuAccuracy, testImuCalibration, testImuTemperatureCompensation, testImuToOrinInterface. Result payloads are uniformly `Result { repeated hal.common.TestResult results = 2; }`. There are **no per-peripheral data shape definitions** in the protos. The semantic content (accel_x, temp_c, …) lives only in the *names of metric keys* the HAL C++ code emits into `TestOutput.metrics` at runtime, plus per-test docstrings in the C++ headers. --- ## 3. Per-repo review summary ### 3.1 Acadia-Client (the prompt's nominal SDK counterpart)
+- **Implementation status: skeleton.** Per `integration/audit_client.md` only step 1 of 18 is implemented. `app.cpp::run` is a shutdown-poll loop; no gRPC stream, no HAL bridge, no run orchestrator, no spool actually wired up. The headers exist (`stream/StreamClient.h`, `run/RunOrchestrator.h`, `hal_bridge/ResultSerializer.h`, `registry/ModuleRegistry.h`, `registry/AdapterRegistry.h` with `adapters/{cpu,thermal,system_memory,stub}_adapter.{h,cc}`) but the .cc files are largely stubs.
 - Connection model from `conf/client.conf.sample`: `server_address` (REQUIRED) + `server_port=50051`, optional TLS triple `tls_ca/tls_cert/tls_key`, otherwise plaintext.
 - Reconnect: `StreamClient` declares automatic reconnect with exponential backoff capped at 30 s.
-- Run lifecycle (intended, from `RunOrchestrator.h`): `ConfigureRun` → `ConfigureAck(ok/error/field)` → `StartRun` → driver thread per run → batched `TestResultBatch` (1 Hz, monotonic `batch_seq` per `run_id`) → `terminal=true` on last batch → `BatchAck` from server. `sequence` and `timestamp` are stamped only by the orchestrator. HAL exceptions / timeouts / cancellation are translated into `TestResult` with `ERROR`/`TIMEOUT`/`ABORTED` status (no raw exceptions on the wire).
-- There is **no discovery RPC on `ClientService`.** A `HelloReport` carries `board_id`+versions+active runs, but no module list. Module discovery is exclusively `HalService.ListModules`.
-
-### 3.2 Acadia-HAL
+- Run lifecycle (intended, from `RunOrchestrator.h`): `ConfigureRun` → `ConfigureAck(ok/error/field)` → `StartRun` → driver thread per run → batched `TestResultBatch` (1 Hz, monotonic `batch_seq` per `run_id`) → `terminal=true` on last batch → `BatchAck` from server. `sequence` and `timestamp` are stamped only by the orchestrator. HAL exceptions/ timeouts/ cancellation are translated into `TestResult` with `ERROR`/`TIMEOUT`/`ABORTED` status (no raw exceptions on the wire).
+- There is **no discovery RPC on `ClientService`.** A `HelloReport` carries `board_id`+versions+active runs, but no module list. Module discovery is exclusively `HalService.ListModules`. ### 3.2 Acadia-HAL
 - C++17 library. `src/lib_base.h` defines the in-process `TestBase` API and `TestMode { ONE_SHOT, LONG_TERM, MONITORING, EVENT }` — the C++ values that the proto `ExecutionMode` mirrors (note: C++ name `ONE_SHOT` vs proto `SINGLE_SHOT` — `integration/contract_reconciliation.md` CM-09 flags this as a known cross-name issue).
 - Module implementations live in `src/*_lib/` (one directory per module). Each header documents its tests and any metric keys.
-- Per-peripheral sample-field semantics (units, ranges) are **not** machine-readable. They are described in C++ comments in each `*_lib.h`. The prompt's request that the SDK's dataclass docstrings carry "units/semantics from the HAL review" therefore requires per-module C++-header scraping; there is no proto annotation or YAML side-table for units.
-
-### 3.3 Acadia-Server (audited for context — the SDK replaces it)
+- Per-peripheral sample-field semantics (units, ranges) are **not** machine-readable. They are described in C++ comments in each `*_lib.h`. The prompt's request that the SDK's dataclass docstrings carry "units/semantics from the HAL review" therefore requires per-module C++-header scraping; there is no proto annotation or YAML side-table for units. ### 3.3 Acadia-Server (audited for context — the SDK replaces it)
 - `src/main.cpp:24-25, 133` instantiates both `HalServiceImpl` (per-mode RPCs) and `ClientServiceImpl` (the Connect bidi). Both are registered on the same `GrpcServerRunner` (`build/build.ninja` confirms both `.o`s in `libacadia-core.a`).
 - README mentions "HAL Client (embedded) → gRPC (port 9090) → HalServiceImpl", but the canonical client-facing port everywhere else is **`50051`**. Treat 9090 as stale documentation.
-- Server side of `HalService` is fully implemented (per `integration/audit_server.md`); Server is the working reference for "what a HalService server does."
-
-### 3.4 Acadia-OS
-- Yocto image for Raspberry Pi 5. Ships `acadia-client` as a systemd unit (recipes-connectivity/acadia-client). `chrony`/`systemd-timesyncd` configured because gRPC timestamps rely on clock sync (`Acadia-OS/req.md` R4.7).
-- **No mDNS / Avahi default for Acadia services.** Default connection is by explicit IP/hostname in `client.conf`. Document the SDK's connection assumption accordingly.
-- TLS material paths are conventional but unused in v1 (lab-subnet trust); leave a seam, no defaults.
-
----
-
-## 4. Open questions you must resolve before Phase 2
-
-### Q1 — Which contract does the SDK speak? (BLOCKING)
-
-Three viable choices, with the trade-offs:
-
-- **Q1-A. SDK speaks `hal.HalService` to an existing Acadia-Server.**
-  - **Pros:** 1:1 fit with the prompt's `run_oneshot / monitor / arm_event / start_long_running / self_test / capabilities` surface. `ListModules` gives discovery for free. Unary + server-streaming patterns are trivially wrapped sync/iterator. All "five-minute test" examples work as written. Implementation is small.
-  - **Cons:** Does *not* "replace Server" — it requires a running Server. Mismatches the prompt's "no Server, no Web, no database" framing. The SDK becomes "an alternative client to Server" (replacing only Web), not "an alternative to Server."
-- **Q1-B. SDK speaks `acadia.stream.ClientService` and *acts as a gRPC server*; on-target Client dials *in* to the SDK.**
-  - **Pros:** Genuinely replaces Server. Uses the contract Server uses with Client.
-  - **Cons:** Inverts the connection direction — `ivv.connect("host:port")` becomes `ivv.serve(":50051")` and the customer has to reconfigure `client.conf` on the target to point at the SDK's host. Must implement `ConfigureRun` → ack → `StartRun` sequencing, run_id allocation, monotonic batch_seq + `BatchAck`, gap detection on reconnect, terminal-batch handling, `RestartRun` semantics, plus heartbeat and log streams. Heavy for a "five-minute test" wrapper.
-- **Q1-C. SDK speaks `hal.HalService` *directly to the on-target board* (bypassing Server entirely).**
-  - **Pros:** Matches the prompt's "no Server, no Web" framing AND keeps the five-line ergonomics.
-  - **Cons:** Requires a `HalServiceImpl` to exist *on the target*. It does not today — Client is `ClientService`-only. Either (a) the target gains a new `HalService` server (work in Acadia-Client or a new on-target shim), or (b) the customer is expected to have already built such a thing. This is the architecturally cleanest answer but it depends on a piece of code that doesn't exist yet.
-
-**Recommendation if you want to ship something useful immediately:** Q1-A (target Server's `HalService`). The SDK becomes the "non-Web caller" of an Acadia stack. The prompt's "replace Server" framing should then be reworded.
-
-**Recommendation if you want the SDK to mean what the prompt literally says:** Q1-C, with a small accompanying ticket on Acadia-Client to expose `HalService` over loopback or `0.0.0.0:50051` on the target.
-
-I will not start Phase 2 until you pick one of A / B / C.
-
-### Q2 — Peripheral identity model
-
-The prompt's example uses `dev.peripheral("imu0")`. The real registry uses bare type ids `"imu"` and assumes one instance per board (no per-instance keying). Confirm: peripheral ids in the SDK are the module ids (`"imu"`, not `"imu0"`)? If multi-instance peripherals are required, that is a HAL/protos change, not an SDK change.
-
-### Q3 — Typed dataclasses: what to generate
-
-The prompt asks for "one Python `@dataclass` per sample/result message" with field hints, units, etc. The real `Result` messages are uniformly `repeated hal.common.TestResult results`. They do *not* expose `accel_x`, `accel_y`, etc. as fields. The data the user reads is `result.results[i].output.metrics["accel_x"].double_value`.
-
-Three options:
+- Server side of `HalService` is fully implemented (per `integration/audit_server.md`); Server is the working reference for "what a HalService server does." ### 3.4 Acadia-OS
+- Yocto image for Zynq UltraScale+. Ships `acadia-client` as a systemd unit (recipes-connectivity/acadia-client). `chrony`/`systemd-timesyncd` configured because gRPC timestamps rely on clock sync (`Acadia-OS/req.md` R4.7).
+- **No mDNS/ Avahi default for Acadia services.** Default connection is by explicit IP/hostname in `client.conf`. Document the SDK's connection assumption accordingly.
+- TLS material paths are conventional but unused in v1 (lab-subnet trust); leave a seam, no defaults. --- ## 4. Open questions you must resolve before Phase 2 ### Q1 — Which contract does the SDK speak? (BLOCKING) Three viable choices, with the trade-offs: - **Q1-A. SDK speaks `hal.HalService` to an existing Acadia-Server.** - **Pros:** 1:1 fit with the prompt's `run_oneshot/ monitor/ arm_event/ start_long_running/ self_test/ capabilities` surface. `ListModules` gives discovery for free. Unary + server-streaming patterns are trivially wrapped sync/iterator. All "five-minute test" examples work as written. Implementation is small. - **Cons:** Does *not* "replace Server" — it requires a running Server. Mismatches the prompt's "no Server, no Web, no database" framing. The SDK becomes "an alternative client to Server" (replacing only Web), not "an alternative to Server."
+- **Q1-B. SDK speaks `acadia.stream.ClientService` and *acts as a gRPC server*; on-target Client dials *in* to the SDK.** - **Pros:** Genuinely replaces Server. Uses the contract Server uses with Client. - **Cons:** Inverts the connection direction — `ivv.connect("host:port")` becomes `ivv.serve(":50051")` and the customer has to reconfigure `client.conf` on the target to point at the SDK's host. Must implement `ConfigureRun` → ack → `StartRun` sequencing, run_id allocation, monotonic batch_seq + `BatchAck`, gap detection on reconnect, terminal-batch handling, `RestartRun` semantics, plus heartbeat and log streams. Heavy for a "five-minute test" wrapper.
+- **Q1-C. SDK speaks `hal.HalService` *directly to the on-target board* (bypassing Server entirely).** - **Pros:** Matches the prompt's "no Server, no Web" framing AND keeps the five-line ergonomics. - **Cons:** Requires a `HalServiceImpl` to exist *on the target*. It does not today — Client is `ClientService`-only. Either (a) the target gains a new `HalService` server (work in Acadia-Client or a new on-target shim), or (b) the customer is expected to have already built such a thing. This is the architecturally cleanest answer but it depends on a piece of code that doesn't exist yet. **Recommendation if you want to ship something useful immediately:** Q1-A (target Server's `HalService`). The SDK becomes the "non-Web caller" of an Acadia stack. The prompt's "replace Server" framing should then be reworded. **Recommendation if you want the SDK to mean what the prompt literally says:** Q1-C, with a small accompanying ticket on Acadia-Client to expose `HalService` over loopback or `0.0.0.0:50051` on the target. I will not start Phase 2 until you pick one of A/ B/ C. ### Q2 — Peripheral identity model The prompt's example uses `dev.peripheral("imu0")`. The real registry uses bare type ids `"imu"` and assumes one instance per board (no per-instance keying). Confirm: peripheral ids in the SDK are the module ids (`"imu"`, not `"imu0"`)? If multi-instance peripherals are required, that is a HAL/protos change, not an SDK change. ### Q3 — Typed dataclasses: what to generate The prompt asks for "one Python `@dataclass` per sample/result message" with field hints, units, etc. The real `Result` messages are uniformly `repeated hal.common.TestResult results`. They do *not* expose `accel_x`, `accel_y`, etc. as fields. The data the user reads is `result.results[i].output.metrics["accel_x"].double_value`. Three options:
 - **Q3-A. Strict prompt-as-written:** generate one dataclass per module `Result` and one for `TestResult`/`TestOutput`/`TypedValue` from descriptors. The customer sees `result.results[i].output.metrics["accel_x"]`. No per-peripheral typed sample fields, because none exist in the contract. Honest, mechanically faithful, but the five-line example `sample.accel_x` *does not type-check*.
 - **Q3-B. Generate dataclasses from the proto descriptors *and* layer per-module hand-curated `Sample` aliases** that flatten the most common metric keys per peripheral (e.g. `ImuSample = NamedTuple(accel_x, accel_y, accel_z, gyro_x, …)`). These are *not* derived from the proto contract — they're a curated convenience layer scraped from HAL C++ headers. Matches the prompt's example. **Violates** the prompt's binding rule "do not hand-edit dataclasses."
-- **Q3-C. Extend the proto contract** so each module declares a typed `Sample` message alongside its generic `Result`. Then Q3-A produces the right ergonomics. This is a protos repo change, not an SDK change.
-
-The prompt's five-line example and its "generate dataclasses from proto descriptors only" rule **cannot both be satisfied with the current protos.** Please choose.
-
-### Q4 — `peripherals()` discovery transport
-
-If Q1 = A or C, `ListModules` exists and we use it.
-If Q1 = B, there is no module-list RPC on `ClientService`. Options: (a) ship the registry yaml inside the SDK, (b) add a `HelloReport`-style discovery to the protos, (c) require the customer to know module ids out of band.
-
-### Q5 — Pause/resume in the public surface
-
-`HalService` has `Pause` and `Resume` (per-module/session). The prompt's `Peripheral` methods list does not include them. Include them as `.pause()` / `.resume()` on long-running sessions? Or omit?
-
-### Q6 — `self_test()` semantics
-
-The prompt asks for `peripheral.self_test() -> TypedResult`. There is no dedicated self-test RPC. The natural mapping is `RunSingleShot` with `Config.test_names = []` (run-all). Confirm that is the intended semantic.
-
-### Q7 — Version handshake
-
-The prompt requires "if Client reports an incompatible contract version, raise `ConnectionError`." `HalService.ListModules` returns `ModuleInfo.version` per module (a single integer per module, not a global contract version). `ClientService.HelloReport` carries `client_version`/`hal_version`/`os_version` strings but those are *runtime* versions, not contract versions. There is **no single global "contract version" field anywhere on the wire.** Options: (a) derive a contract fingerprint from descriptor hashes baked in at SDK build time and require the peer to expose the same hash (requires a new RPC or field); (b) compare `hal_version` strings via semver; (c) skip the handshake in v1 and document it as future work.
-
-### Q8 — Default port and address discovery
-
-`client.conf.sample` and code agree on **`50051`** plaintext. Server README mentions `9090` (stale). Confirm SDK default is `50051`, plaintext, no mDNS.
-
-### Q9 — Metric units / docstring sources
-
-If Q3 ≠ A, the SDK needs unit/semantic annotations per metric key per module. None of these are machine-readable. Are you OK with the SDK scraping C++ header comments for them, or should we ship them as a hand-curated YAML side-table maintained in the SDK?
-
-### Q10 — The prompt's "single device, single test at a time"
-
-`ClientService` is explicitly multi-run-at-a-time (multiplexed by `run_id`). `HalService` is per-call. Either contract supports "one test at a time" as a *policy* the SDK enforces by refusing concurrent calls. Confirm that policy.
-
----
-
-## 5. Prompt-vs-reality discrepancies (summary list)
-
-| # | Prompt says | Reality | Severity |
+- **Q3-C. Extend the proto contract** so each module declares a typed `Sample` message alongside its generic `Result`. Then Q3-A produces the right ergonomics. This is a protos repo change, not an SDK change. The prompt's five-line example and its "generate dataclasses from proto descriptors only" rule **cannot both be satisfied with the current protos.** Please choose. ### Q4 — `peripherals` discovery transport If Q1 = A or C, `ListModules` exists and we use it.
+If Q1 = B, there is no module-list RPC on `ClientService`. Options: (a) ship the registry yaml inside the SDK, (b) add a `HelloReport`-style discovery to the protos, (c) require the customer to know module ids out of band. ### Q5 — Pause/resume in the public surface `HalService` has `Pause` and `Resume` (per-module/session). The prompt's `Peripheral` methods list does not include them. Include them as `.pause`/ `.resume` on long-running sessions? Or omit? ### Q6 — `self_test` semantics The prompt asks for `peripheral.self_test -> TypedResult`. There is no dedicated self-test RPC. The natural mapping is `RunSingleShot` with `Config.test_names = []` (run-all). Confirm that is the intended semantic. ### Q7 — Version handshake The prompt requires "if Client reports an incompatible contract version, raise `ConnectionError`." `HalService.ListModules` returns `ModuleInfo.version` per module (a single integer per module, not a global contract version). `ClientService.HelloReport` carries `client_version`/`hal_version`/`os_version` strings but those are *runtime* versions, not contract versions. There is **no single global "contract version" field anywhere on the wire.** Options: (a) derive a contract fingerprint from descriptor hashes baked in at SDK build time and require the peer to expose the same hash (requires a new RPC or field); (b) compare `hal_version` strings via semver; (c) skip the handshake in v1 and document it as future work. ### Q8 — Default port and address discovery `client.conf.sample` and code agree on **`50051`** plaintext. Server README mentions `9090` (stale). Confirm SDK default is `50051`, plaintext, no mDNS. ### Q9 — Metric units/ docstring sources If Q3 ≠ A, the SDK needs unit/semantic annotations per metric key per module. None of these are machine-readable. Are you OK with the SDK scraping C++ header comments for them, or should we ship them as a hand-curated YAML side-table maintained in the SDK? ### Q10 — The prompt's "single device, single test at a time" `ClientService` is explicitly multi-run-at-a-time (multiplexed by `run_id`). `HalService` is per-call. Either contract supports "one test at a time" as a *policy* the SDK enforces by refusing concurrent calls. Confirm that policy. --- ## 5. Prompt-vs-reality discrepancies (summary list) | # | Prompt says | Reality | Severity |
 |---|---|---|---|
 | D1 | SDK speaks the contract "Server speaks to Client" | Server doesn't speak gRPC *to* Client; Client dials *out* to Server's bidi `ClientService`. Prompt's natural API instead matches `HalService`. | **Blocking — Q1** |
 | D2 | `dev.peripheral("imu0")` | Module ids are bare type names (`"imu"`); no per-instance ids in the registry. | Medium — Q2 |
 | D3 | "One typed dataclass per peripheral sample with `accel_x`, etc." | Module `Result` messages contain `repeated hal.common.TestResult`; per-metric fields are dynamic map keys, not proto fields. | **Blocking — Q3** |
-| D4 | `Device.peripherals()` is a real discovery RPC | Exists as `HalService.ListModules`. Does **not** exist on `ClientService`. | Conditional on Q1 |
+| D4 | `Device.peripherals` is a real discovery RPC | Exists as `HalService.ListModules`. Does **not** exist on `ClientService`. | Conditional on Q1 |
 | D5 | "If Client reports an incompatible contract version, raise ConnectionError" | No contract-version field exists on the wire. Only per-module integer `version` and runtime version strings. | Medium — Q7 |
 | D6 | Peripheral list "IMU, motor, Ethernet, storage, camera, etc." | 51 modules. There is no `motor` module; closest analogues are `pwm_output`, `gpio`, `power_management`. | Low (documentation) |
 | D7 | "Server is the orchestrator; SDK replaces it without Server/Web/DB" | The Server's `HalService` is the natural ergonomic match; replacing Server entirely means re-implementing `ClientService` host + spool + ack protocol + run-state machine. | Blocking — Q1 |
 | D8 | HAL has clean per-peripheral "sample" types | HAL has tests that emit `TestResult` with metrics maps. No `Sample` messages. | Conditional on Q3 |
-| D9 | mDNS / network defaults | None defined; explicit IP/port required. | Low |
+| D9 | mDNS/ network defaults | None defined; explicit IP/port required. | Low |
 | D10 | C++ `TestMode::ONE_SHOT` ↔ proto `SINGLE_SHOT` | Known naming mismatch documented in `integration/contract_reconciliation.md` CM-09. Cosmetic for the SDK — wire is `SINGLE_SHOT`. | Low |
 | D11 | "Adding a peripheral = update contract, regenerate" | True for `Config`/`Result` proto, but **also** requires appending to `protos/registry/modules.yaml` and adding a C++ `*_lib` implementation + Client `adapters/`. | Low (document) |
-| D12 | Client is mature enough to test against | Client is a skeleton (only step 1/18 done). The SDK's test suite must use the fake server the prompt already requires — there is no live Client to integration-test against in this workspace. | Low (no SDK impact; expected per prompt §4.3) |
-
----
-
-## 6. Connection and lifecycle model — what the SDK would actually do (under each Q1 choice)
-
-### If Q1 = A (HalService → Server)
-- `ivv.connect(addr)`: insecure `grpc.insecure_channel(addr)`; eagerly call `ListModules()` to (a) verify the channel is alive and (b) cache the module registry. Wrap any `grpc.RpcError` as `ivv.ConnectionError`.
-- `Device.peripherals()` → cached `ModuleInfo.id` list.
-- `Device.peripheral(id)` → look up `ModuleInfo`, build `Peripheral` whose `capabilities()` reflect: always `{oneshot, long_term, monitoring, event_based, self_test, stop}` (HalService supports all four modes for every module; capability filtering would need a new contract field).
+| D12 | Client is mature enough to test against | Client is a skeleton (only step 1/18 done). The SDK's test suite must use the fake server the prompt already requires — there is no live Client to integration-test against in this workspace. | Low (no SDK impact; expected per prompt §4.3) | --- ## 6. Connection and lifecycle model — what the SDK would actually do (under each Q1 choice) ### If Q1 = A (HalService → Server)
+- `ivv.connect(addr)`: insecure `grpc.insecure_channel(addr)`; eagerly call `ListModules` to (a) verify the channel is alive and (b) cache the module registry. Wrap any `grpc.RpcError` as `ivv.ConnectionError`.
+- `Device.peripherals` → cached `ModuleInfo.id` list.
+- `Device.peripheral(id)` → look up `ModuleInfo`, build `Peripheral` whose `capabilities` reflect: always `{oneshot, long_term, monitoring, event_based, self_test, stop}` (HalService supports all four modes for every module; capability filtering would need a new contract field).
 - `run_oneshot(**cfg)` → `RunSingleShot(SingleShotRequest{module_id, common, module_config: Any.Pack(Config(test_names=cfg.get("tests", [])))})` → unpack `ResultEnvelope.payload` into `<module>.Result` → convert to the chosen dataclass shape.
 - `monitor(period_ms, duration_s, **cfg)` → `StartMonitoring(MonitoringRequest)` server-streaming RPC → yield each `ResultEnvelope` decoded → close on duration timeout via `Stop(StopRequest)` or call-cancel.
 - `arm_event(**trigger)` → `StartEventBased(EventBasedRequest{condition: EventCondition(test_name=…, expected_pass=…, expression=…)})` → iterator.
 - `start/query/stop_long_running` → `StartLongTerm(...)` stream consumed in a background generator; `query` returns the latest batch; `stop` calls `Stop`.
-- `self_test()` → `RunSingleShot` with empty `test_names`.
-
-### If Q1 = B (ClientService — SDK is gRPC server)
+- `self_test` → `RunSingleShot` with empty `test_names`. ### If Q1 = B (ClientService — SDK is gRPC server)
 - `ivv.listen(":50051")` returns a `Device` proxy that blocks until a `HelloReport` arrives (or times out → `ConnectionError`).
 - Discovery: ship registry yaml inside the SDK *or* require explicit module id strings (Q4).
 - `run_oneshot`: generate a fresh `run_id`, send `ConfigureRun{run_id, module_id, mode=SINGLE_SHOT, common, module_config}`, await `ConfigureAck{ok}` (raise `ConfigError` on `ok=false` with `field`/`error`), send `StartRun{run_id}`, accumulate `TestResultBatch` until `terminal=true`, emit `BatchAck`s along the way, return the single decoded result.
 - Streaming modes: same setup, yield each `ResultSample` as it arrives.
 - `start_long_running`/`query`/`stop`: send `StartRun`, queue arriving batches, expose `query` as "latest batch", `stop` as `StopRun`.
-- Reconnect/resume + spool semantics: explicitly out of scope for SDK v1 (per prompt "evidence/audit/persistence are NOT the SDK's job"). Document that batches received between reconnects may be re-delivered (spec allows it; `batch_seq` lets the SDK dedupe).
-
-### If Q1 = C (HalService directly to target)
-- Same as A, but `addr` points at the target board. Requires the target to expose `HalService`. Outside this SDK's scope; flag as an Acadia-Client / new shim task.
-
----
-
-## 7. Error model the SDK will use (proposed; depends on Q1)
-
-The prompt's hierarchy as-is:
+- Reconnect/resume + spool semantics: explicitly out of scope for SDK v1 (per prompt "evidence/audit/persistence are NOT the SDK's job"). Document that batches received between reconnects may be re-delivered (spec allows it; `batch_seq` lets the SDK dedupe). ### If Q1 = C (HalService directly to target)
+- Same as A, but `addr` points at the target board. Requires the target to expose `HalService`. Outside this SDK's scope; flag as an Acadia-Client/ new shim task. --- ## 7. Error model the SDK will use (proposed; depends on Q1) The prompt's hierarchy as-is:
 ```
-IVVError
- ├── ConnectionError      gRPC UNAVAILABLE, channel failure, version mismatch
- ├── PeripheralNotFound   unknown module_id (ListModules miss or NOT_FOUND from Server)
- ├── NotSupported         capability filter denies the call
- ├── ConfigError          INVALID_ARGUMENT, ConfigureAck(ok=false), bad enum, etc.
- ├── TestError            ResultEnvelope.status in {FAIL, ERROR, ABORTED} when the customer asked us to raise
- └── TimeoutError         DEADLINE_EXCEEDED, ResultEnvelope.status=TIMEOUT, duration overrun
-```
-
-Open sub-question: when a test legitimately *returns* `status=FAIL`, that is a valid result, not an exception. Recommend: only `ERROR`/`TIMEOUT`/`ABORTED` raise; `FAIL` is a returned dataclass with `.status == "fail"`. Confirm.
-
----
-
-## 8. Other items to flag (not blocking)
-
-- `integration/contract_reconciliation.md` CM-11 notes that **HAL itself has no pause API** — Server's `HalService.Pause`/`Resume` exist as protocol stubs that may not be honored by HAL today. If we expose them on the SDK, document them as "advisory; may no-op."
-- CM-14: `ModuleInfo` in the proto lacks a `category` field even though the registry YAML has one. If `Device.peripherals_by_category()` is desired, it requires either a contract change or shipping the YAML in the SDK.
+IVVError ├── ConnectionError gRPC UNAVAILABLE, channel failure, version mismatch ├── PeripheralNotFound unknown module_id (ListModules miss or NOT_FOUND from Server) ├── NotSupported capability filter denies the call ├── ConfigError INVALID_ARGUMENT, ConfigureAck(ok=false), bad enum, etc. ├── TestError ResultEnvelope.status in {FAIL, ERROR, ABORTED} when the customer asked us to raise └── TimeoutError DEADLINE_EXCEEDED, ResultEnvelope.status=TIMEOUT, duration overrun
+``` Open sub-question: when a test legitimately *returns* `status=FAIL`, that is a valid result, not an exception. Recommend: only `ERROR`/`TIMEOUT`/`ABORTED` raise; `FAIL` is a returned dataclass with `.status == "fail"`. Confirm. --- ## 8. Other items to flag (not blocking) - `integration/contract_reconciliation.md` CM-11 notes that **HAL itself has no pause API** — Server's `HalService.Pause`/`Resume` exist as protocol stubs that may not be honored by HAL today. If we expose them on the SDK, document them as "advisory; may no-op."
+- CM-14: `ModuleInfo` in the proto lacks a `category` field even though the registry YAML has one. If `Device.peripherals_by_category` is desired, it requires either a contract change or shipping the YAML in the SDK.
 - The post-refactor proto rename `TestResultEntry` → `TestResult` is recent. Codegen must read `Result.results = 2` (the new tag), not the reserved `test_results = 1`.
 - 51 module protos × generating one dataclass each is a meaningful amount of code; pre-generate at sdist time and commit, per the prompt.
-- `proto3` is used everywhere; protobuf field "presence" is therefore the proto3 default-semantics flavour. Generated dataclasses should not invent `Optional[...]` where the proto says no presence — use `dataclasses.field(default=<zero>)` to match proto3 semantics.
-
----
-
-## 9. What I have NOT done (per the prompt)
-
-- No SDK code written.
+- `proto3` is used everywhere; protobuf field "presence" is therefore the proto3 default-semantics flavour. Generated dataclasses should not invent `Optional[...]` where the proto says no presence — use `dataclasses.field(default=<zero>)` to match proto3 semantics. --- ## 9. What I have NOT done (per the prompt) - No SDK code written.
 - No `pyproject.toml`, no scaffolding, no codegen, no stubs.
-- No assumptions made on any of the open questions in §4. The SDK's shape pivots on Q1 and Q3 in particular.
-
----
-
-## 10. Ask
-
-Please answer §4 Q1 (blocking), Q3 (blocking), and the rest of §4 inline. Once those are settled I will:
+- No assumptions made on any of the open questions in §4. The SDK's shape pivots on Q1 and Q3 in particular. --- ## 10. Ask Please answer §4 Q1 (blocking), Q3 (blocking), and the rest of §4 inline. Once those are settled I will:
 1. Scaffold `acadia-sdk` per the prompt's §4.1 layout.
 2. Generate stubs + dataclasses.
 3. Build the hand-written layer, fake server, tests, examples, and docs.
