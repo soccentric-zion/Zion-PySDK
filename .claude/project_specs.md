@@ -1,4 +1,4 @@
-# Zion-PySDK — specs Remote: `git@github.com:SiliconCentric/Zion-PySDK.git`
+# Zion-PySDK — specs Remote: `git@github.com:soccentric-zion/Zion-PySDK.git`
 Stack: Python, uv-managed, src layout. Consumes the `HalService` gRPC endpoint exposed by Zion-Client — the same wire contract
 Zion-Server speaks. ## Layout * `zion-sdk/` — everything: source, tooling, docs, examples, the make workflow (setup/ gen/ check/ build).
 * `zion-sdk/src/zion_sdk/` — the package. Import name `zion_sdk`, distribution name `zion-sdk`.
