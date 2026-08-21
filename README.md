@@ -41,6 +41,10 @@ Use `pyproject.toml` and the package README as authority if a Make target differ
 ## Limitations
 
 No package install, protobuf regeneration, live gRPC connection, physical peripheral, or long-running example was manually verified. Generated bindings may outpace implementations available in the current HAL/client pair.
+
+## Detailed Reference
+
+The retained SDK guide below contains the repository's extended package, API, quickstart, and compatibility notes.
 # Zion-PySDK Python SDK leaf for the **Zion** project (Zynq UltraScale+ + STM32) in the
 SiliconCentric `project-managers` fleet. This leaf provides `zion-sdk`, a Pythonic gRPC client for the `HalService`
 endpoint exposed by `Zion-Client`. The SDK distribution package is
