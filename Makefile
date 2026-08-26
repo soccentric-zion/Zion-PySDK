@@ -17,9 +17,10 @@
 #   make clean      # remove build artefacts
 #   make distclean  # also remove the venv
 
+.DEFAULT_GOAL := help
+
 SHELL        := /bin/bash
 .SHELLFLAGS  := -eu -o pipefail -c
-.DEFAULT_GOAL := all
 
 UV           ?= uv
 VENV         ?= .venv
@@ -51,9 +52,6 @@ endef
 .PHONY: all help check
 all: check
 
-help: ## Show this help
-	@printf "$(C_BOLD)Zion-PySDK$(C_END) — uv-managed targets\n\n"
-	@awk 'BEGIN {FS=":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  $(C_OK)%-14s$(C_END) %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 check: lint typecheck test ## Run lint + typecheck + test
 
@@ -138,3 +136,20 @@ clean: ## Remove build artefacts (keeps venv)
 distclean: clean ## Also remove the uv venv
 	$(call banner,Removing venv)
 	@rm -rf $(VENV) $(STAMP_DIR)
+
+# ── Fleet-standard aliases ────────────────────────────────────────────────────
+# Same verbs mean the same thing in every repo; these forward to this
+# repo's own targets rather than duplicating their recipes.
+.PHONY: install
+install: setup ## Alias for setup
+
+# ── Help ──────────────────────────────────────────────────────────────────────
+# Targets are self-documenting: text after `## ` on a target line is picked up
+# by `make help` automatically, so the listing can never drift from the rules.
+.PHONY: help
+help: ## Show this help
+	@printf '\n  \033[1m%s\033[0m\n' 'Zion-PySDK'
+	@printf '  Usage: make <target> [VAR=value ...]\n'
+	@printf '\n'
+	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z0-9_.\/-]+:.*?## / { printf "    \033[36m%-24s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
+	@printf '\n'
