@@ -12,7 +12,7 @@
 #   make lint       # ruff
 #   make typecheck  # mypy --strict
 #   make check      # lint + typecheck + test
-#   make build      # build wheel + sdist
+#   make build      # build wheel + sdist in Docker
 #   make shell      # drop into a uv-activated subshell
 #   make clean      # remove build artefacts
 #   make distclean  # also remove the venv
@@ -115,10 +115,15 @@ typecheck: $(INSTALL_STAMP) ## Run mypy --strict
 	$(call banner,Type-checking with mypy --strict)
 	@$(VENV)/bin/python -m mypy --strict --config-file $(SDK_DIR)/pyproject.toml $(SDK_DIR)/src/zion_sdk
 
-build: $(INSTALL_STAMP) ## Build sdist + wheel
-	$(call banner,Building distribution artefacts)
-	@$(UV) pip install --python $(VENV)/bin/python --quiet build
-	@$(VENV)/bin/python -m build --outdir $(SDK_DIR)/dist $(SDK_DIR)
+build: ## Build sdist + wheel in Docker (emerges in $(SDK_DIR)/dist on the host)
+	$(call banner,Building distribution artefacts in Docker)
+	@docker run --rm -v $(CURDIR):/workspace -w /workspace \
+		ghcr.io/astral-sh/uv:bookworm-slim \
+		sh -c "cd $(SDK_DIR) && uv build --out-dir dist ."
+
+docker-build: build ## Alias for build (fleet standard — Docker build)
+
+.PHONY: docker-build
 
 # ── Convenience ───────────────────────────────────────────────────────────────
 .PHONY: shell
